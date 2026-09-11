@@ -21,18 +21,30 @@ const CACHEABLE_FILES = ["index.wasm","index.pck"];
 const FULL_CACHE = CACHED_FILES.concat(CACHEABLE_FILES);
 
 self.addEventListener('install', (event) => {
-	event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(CACHED_FILES)));
+	// skipWaiting: take over as soon as the new version is cached, instead of
+	// waiting for every open tab/PWA instance to be closed first. Without this a
+	// redeploy keeps serving the stale index.pck indefinitely on mobile.
+	event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(CACHED_FILES)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
 	event.waitUntil(caches.keys().then(
 		function (keys) {
 			// Remove old caches.
-			return Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME).map((key) => caches.delete(key)));
+			const stale = keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME);
+			return Promise.all(stale.map((key) => caches.delete(key))).then(() => stale.length > 0);
 		}
-	).then(function () {
+	).then(function (wasUpdate) {
 		// Enable navigation preload if available.
-		return ('navigationPreload' in self.registration) ? self.registration.navigationPreload.enable() : Promise.resolve();
+		const preload = ('navigationPreload' in self.registration) ? self.registration.navigationPreload.enable() : Promise.resolve();
+		return preload.then(() => self.clients.claim()).then(function () {
+			// Only reload when this activation actually replaced an older cache —
+			// on a first install there is nothing stale on screen to refresh.
+			if (!wasUpdate) {
+				return Promise.resolve();
+			}
+			return self.clients.matchAll({ type: 'window' }).then((all) => all.forEach((c) => c.navigate(c.url)));
+		});
 	}));
 });
 
